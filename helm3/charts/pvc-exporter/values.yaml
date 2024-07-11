@@ -1,0 +1,85 @@
+# Default values for pvc-exporter.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+## Provide a name to substitute for the full names of resources
+##
+fullnameOverride: ""
+
+
+PvcExporter:
+  ## Annotations for pvc-exporter.
+  ##
+  annotations: {}
+
+  ## Image for pvc-exporter.
+  ##
+  image:
+    repository: andyhsu1/pvc-exporter
+    tag: v0.18
+    pullPolicy: IfNotPresent
+    pullSecrets: []
+  
+  ## Environment variables
+  ##
+  env:
+  - name: EXPORTER_SERVER_PORT
+    ## This is exporter http server port.
+    value: "8848"
+  - name: SCAN_INTERVAL
+    ## This is scan pvc interval, unit is second.
+    value: "60"
+
+  ## Container port need same as Env $EXPORTER_SERVER_PORT.
+  ##
+  containerPort: 8848
+
+  ## Configuration for pvc-exporter service
+  ##
+  service:
+    headless: false
+    ## If BlockPvcScanner.service.headless=true, then ignore type
+    type: ClusterIP
+    port: 8848
+    labels: {}
+    annotations: {}
+      # prometheus.io/path: "/"
+      # prometheus.io/port: "8848"
+      # prometheus.io/scrape: "true"
+
+  ## This exporter deployed as daemonset.
+  ## 
+  nodeSelector: {}
+  affinity: {}
+  tolerations:
+  - key: node-role.kubernetes.io/master
+    effect: NoSchedule
+
+  ## Assign resources for this exporter.
+  ##
+  resources:
+    limits:
+      cpu: 1
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 200Mi
+
+  ## LivenessProbe for exporter.
+  ##
+  livenessProbe:
+    httpGet:
+      path: /
+      port: metrics
+    timeoutSeconds: 3
+    failureThreshold: 3
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    successThreshold: 1
+
+## Service monitor used to expose this metrics.
+##
+serviceMonitor:
+  enabled: true
+  annotations: {}
+  labels: {}

@@ -1,0 +1,22 @@
+{{- $fullName := include "pvc-exporter.fullname" . -}}
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  labels:
+    app: {{ $fullName }}
+    release: prome
+  name: {{ $fullName }}
+  namespace: {{.Release.Namespace}}
+spec:
+  selector:
+    matchLabels:
+      app: {{ $fullName }}
+      version: {{ .Chart.AppVersion }}
+  endpoints:
+  - interval: 30s
+    targetPort: metrics
+    scheme: http
+    path: /
+  jobLabel: app
+{{- end}}

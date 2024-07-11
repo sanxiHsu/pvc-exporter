@@ -1,0 +1,30 @@
+{{- $fullName := include "pvc-exporter.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: {{ $fullName }}
+    version: {{ .Chart.AppVersion }}
+    {{- with .Values.PvcExporter.service.labels }}
+{{ toYaml . | indent 4 }}
+    {{- end }}
+  {{- with .Values.PvcExporter.service.annotations }}
+  annotations:
+{{ toYaml . | indent 4 }}
+  {{- end }}
+  name: {{ $fullName }}
+  namespace: {{.Release.Namespace}}
+spec:
+  ports:
+  - port: {{.Values.PvcExporter.service.port}}
+    name: metrics
+    protocol: TCP
+    targetPort: {{.Values.PvcExporter.containerPort}}
+  selector:
+    app: {{ $fullName }}
+    version: {{ .Chart.AppVersion }}
+  {{- if .Values.PvcExporter.service.headless }}
+  clusterIP: None
+  {{- else }}
+  type: {{.Values.PvcExporter.service.type }}
+  {{- end }}
