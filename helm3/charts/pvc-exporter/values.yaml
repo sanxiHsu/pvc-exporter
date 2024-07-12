@@ -17,9 +17,9 @@ PvcExporter:
   image:
     repository: andyhsu1/pvc-exporter
     tag: v0.18
-    pullPolicy: IfNotPresent
+    pullPolicy: Always
     pullSecrets: []
-  
+
   ## Environment variables
   ##
   env:
