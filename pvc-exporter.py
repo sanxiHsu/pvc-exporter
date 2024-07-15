@@ -21,6 +21,8 @@ SCAN_INTERVAL = float(os.getenv('SCAN_INTERVAL', 60))
 metric_pvc_usage = Gauge('pvc_usage_bytes', 'Bytes used by PVC', ['persistentvolumeclaim', 'pvc_namespace', 'pvc_type'])
 metric_pvc_mapping = Gauge('pvc_pod_mapping', 'Mapping between PVC and Pods',
                            ['persistentvolumeclaim', 'pvc_namespace', 'mountedby', 'pod_namespace', 'host_ip'])
+metric_pvc_total = Gauge('pvc_capacity_bytes', 'Total capacity of PVC',
+                         ['persistentvolumeclaim', 'pvc_namespace', 'pvc_type'])
 
 # Kubernetes API初始化
 try:
@@ -37,52 +39,86 @@ except Exception as e:
 def update_metrics():
     # 缓存用于存储PVC到PV的映射信息
     pvc_to_pv = {}
+    # 缓存已处理的PVC，避免重复处理
+    processed_pvc = set()
 
     # 获取所有命名空间下的Pods
     pods = v1.list_pod_for_all_namespaces(watch=False).items
 
-    # 更新PVC到Pod的映射、PVC的使用情况和总容量
     for pod in pods:
-        if pod.status.host_ip == os.getenv('HOST_IP') and pod.status.phase == 'Running':
-            ns_name = pod.metadata.namespace
-            for volume in pod.spec.volumes:
-                pvc_source = getattr(volume, 'persistent_volume_claim', None)
-                if isinstance(pvc_source, V1PersistentVolumeClaimVolumeSource):
-                    claim_ref = pvc_source.claim_name
-                    if claim_ref in pvc_to_pv:
-                        pvc = pvc_to_pv[claim_ref]['pvc']
-                        pv = pvc_to_pv[claim_ref]['pv']
-                    else:
-                        try:
-                            pvc = v1.read_namespaced_persistent_volume_claim(claim_ref, ns_name)
-                            if pvc.spec.volume_name:
-                                pv_name = pvc.spec.volume_name
-                                pv = v1.read_persistent_volume(pv_name)
-                                pvc_to_pv[claim_ref] = {
-                                    'pvc': pvc,
-                                    'pv': pv,
-                                }
-                        except Exception as e:
-                            logger.error(f"Failed to read PVC/PV for {claim_ref}: {e}")
+        handle_pod(pod, pvc_to_pv, processed_pvc)
 
-                        # 更新PVC的使用情况
-                        pvc_used, pvc_type = get_pvc_used(pv)
-                        if pvc_used is not None:
-                            metric_pvc_usage.labels(
-                                persistentvolumeclaim=pvc.metadata.name,
-                                pvc_namespace=pvc.metadata.namespace,
-                                pvc_type=pvc_type
-                            ).set(pvc_used)
 
-                        # 更新PVC到Pod的映射
-                        metric_pvc_mapping.labels(
-                            persistentvolumeclaim=claim_ref,
-                            pvc_namespace=ns_name,
-                            mountedby=pod.metadata.name,
-                            pod_namespace=ns_name,
-                            host_ip=pod.status.host_ip
-                        ).inc()
-                        logger.info(f"Updated PVC mapping for {claim_ref} in pod {pod.metadata.name}.")
+def handle_pod(pod, pvc_to_pv, processed_pvc):
+    if pod.status.host_ip != os.getenv('HOST_IP') or pod.status.phase != 'Running':
+        return False
+
+    ns_name = pod.metadata.namespace
+    for volume in pod.spec.volumes:
+        handle_volume(volume, pod, ns_name, pvc_to_pv, processed_pvc)
+
+
+def handle_volume(volume, pod, ns_name, pvc_to_pv, processed_pvc):
+    pvc_source = getattr(volume, 'persistent_volume_claim', None)
+    if not isinstance(pvc_source, V1PersistentVolumeClaimVolumeSource):
+        return False
+
+    claim_ref = pvc_source.claim_name
+    if claim_ref in processed_pvc:
+        return
+
+    handle_pvc(claim_ref, ns_name, pvc_to_pv, processed_pvc)
+    update_pvc_pod_mapping(claim_ref, ns_name, pod)
+
+
+def handle_pvc(claim_ref, ns_name, pvc_to_pv, processed_pvc):
+    pvc, pv = get_pvc_pv_pair(claim_ref, ns_name)
+    if pvc and pv:
+        pvc_to_pv[claim_ref] = {'pvc': pvc, 'pv': pv}
+        update_pvc_metrics(pvc, pv)
+        processed_pvc.add(claim_ref)
+
+
+def get_pvc_pv_pair(claim_ref, namespace):
+    try:
+        pvc = v1.read_namespaced_persistent_volume_claim(claim_ref, namespace)
+        if pvc.spec.volume_name:
+            pv_name = pvc.spec.volume_name
+            pv = v1.read_persistent_volume(pv_name)
+            return pvc, pv
+    except Exception as e:
+        logger.error(f"Failed to read PVC/PV for {claim_ref}: {e}")
+    return None, None
+
+
+def update_pvc_metrics(pvc, pv):
+    pvc_used, pvc_type = get_pvc_used(pv)
+    if pvc_used is not None:
+        metric_pvc_usage.labels(
+            persistentvolumeclaim=pvc.metadata.name,
+            pvc_namespace=pvc.metadata.namespace,
+            pvc_type=pvc_type
+        ).set(pvc_used)
+
+    capacity = pv.spec.capacity.get('storage')
+    if capacity:
+        capacity_bytes = parse_size(capacity)
+        metric_pvc_total.labels(
+            persistentvolumeclaim=pvc.metadata.name,
+            pvc_namespace=pvc.metadata.namespace,
+            pvc_type=pvc_type
+        ).set(capacity_bytes)
+
+
+def update_pvc_pod_mapping(claim_ref, ns_name, pod):
+    metric_pvc_mapping.labels(
+        persistentvolumeclaim=claim_ref,
+        pvc_namespace=ns_name,
+        mountedby=pod.metadata.name,
+        pod_namespace=ns_name,
+        host_ip=pod.status.host_ip
+    ).inc()
+    logger.info(f"Updated PVC mapping for {claim_ref} in pod {pod.metadata.name}.")
 
 
 # 辅助函数，用于将大小字符串转换为字节
